@@ -1,0 +1,30 @@
+# Ignore downloaded data
+*.SAFE/
+*.zip
+*.tif
+*.tiff
+*.jp2
+*.png
+*.jpg
+
+# Ignore folders that store intermediate or final results
+raw_downloads/
+unzipped/
+ind_bands/
+merged/
+clipped/
+maps/
+tmp/
+output/
+logs/
+cruz/
+# data/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore system files
+.DS_Store
+# .env

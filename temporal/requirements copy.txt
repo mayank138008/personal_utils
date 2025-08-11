@@ -1,0 +1,14 @@
+temporalio
+pyyaml
+
+
+numpy
+rasterio
+geopandas
+joblib
+requests
+pyyaml
+python-dotenv
+
+numpy==1.23.5
+scikit-learn==1.2.2

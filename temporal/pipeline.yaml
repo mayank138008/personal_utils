@@ -1,0 +1,332 @@
+export: true
+image: 
+  name: 037593202611.dkr.ecr.ap-southeast-1.amazonaws.com/custom-pipeline-image:0.0.3-27
+  aws:
+    access-key: $AWS_ACCESS_KEY_ID
+    secret-key: $AWS_SECRET_ACCESS_KEY
+
+reference-steps:
+  deployment-steps:
+    - step: &deploy-to-ecs
+        name: Deployment - Create ECS definition
+        image: amazon/aws-cli:2.28.0
+        script: 
+            - echo "Reading image path from docker-image-version.txt..."
+            - IMAGE_URI=$(cat docker-image-version.txt)
+            - |
+              echo "Using image: $IMAGE_URI"
+
+            - TASK_NAME="$BITBUCKET_REPO_SLUG-$ENVIRONMENT"
+            - EXECUTION_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/ecsTaskExecutionRole"
+            - TASK_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/ecsTaskRole"
+
+            - echo "Registering task definition..."
+            - |
+              aws ecs register-task-definition \
+                --family "$TASK_NAME" \
+                --requires-compatibilities FARGATE \
+                --cpu "256" \
+                --memory "512" \
+                --network-mode awsvpc \
+                --execution-role-arn "$EXECUTION_ROLE_ARN" \
+                --task-role-arn "$TASK_ROLE_ARN" \
+                --container-definitions "[
+                  {
+                    \"name\": \"app\",
+                    \"image\": \"$IMAGE_URI\",
+                    \"essential\": true,
+                    \"portMappings\": [
+                      {
+                        \"containerPort\": 80,
+                        \"hostPort\": 80,
+                        \"protocol\": \"tcp\"
+                      }
+                    ],
+                    \"logConfiguration\": {
+                      \"logDriver\": \"awslogs\",
+                      \"options\": {
+                          \"awslogs-group\": \"/ecs/$TASK_NAME\",
+                          \"awslogs-region\": \"$AWS_DEFAULT_REGION\",
+                          \"awslogs-stream-prefix\": \"ecs\"
+                      }
+                    }
+                  }
+                ]" 
+
+
+  security-scan-steps:
+    - step: &scan-gitleaks
+        name: Gitleaks Scan
+        service:
+          docker:
+            memory: 4096   # in MB
+        artifacts:
+          - gitleaks-report.json
+        script:
+        - pipe: atlassian/git-secrets-scan:3.2.0
+          variables:
+            DEBUG: "true"
+            CREATE_REPORT: "false" #skip create codeinsight report in BB
+    - step: &aqua-trivy-scan-step
+        size: 8x
+        name: Aqua Trivy Scan
+        service:
+          docker:
+            memory: 32768   # in MB
+        artifacts:
+          - trivy-results.json
+        script:
+        - export IMAGE_REF=$(cat docker-image-version.txt)
+        - |
+          if [[ "$BITBUCKET_BRANCH" == "main" || "$BITBUCKET_BRANCH" == release/* ]]; then
+            TRIVY_EXIT_CODE=1
+          else
+            TRIVY_EXIT_CODE=0
+          fi
+        - pipe: aquasecurity/trivy-pipe:1.0.0
+          variables:
+            imageRef: '$IMAGE_REF'
+            exitCode: '$TRIVY_EXIT_CODE'
+            ignoreUnfixed: "true"
+            vulnType: 'os,library'
+            severity: 'CRITICAL'
+            format: 'table'
+            output: 'trivy-results.json'
+            AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+            AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+        # Parse JSON to count critical/high
+        # - |
+        #   CRITICAL=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-results.json)
+        #   HIGH=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-results.json)
+        #   echo "CRITICAL=$CRITICAL
+        #   RESULT="PASS"
+        #   if [ "$CRITICAL" -gt 0 ]; then
+        #     RESULT="FAIL"
+        #   fi
+
+        # # Create Code Insights report payload
+        # - |
+        #   jq -n \
+        #   --arg title "Trivy Vulnerability Scan" \
+        #   --arg details "Scan of Docker image: $IMAGE_REF" \
+        #   --arg report_type "SECURITY" \
+        #   --arg result "$RESULT" \
+        #   --argjson critical "$CRITICAL" \
+        #   --argjson high "$HIGH" \
+        #   --arg report_file "trivy-results.json" '{title: $title,details: $details,report_type: $report_type,result: $result,data: [{ title: "CRITICAL vulnerabilities", type: "NUMBER", value: $critical },{ title: "HIGH vulnerabilities", type: "NUMBER", value: $high },{ title: "Trivy Report", type: "LINK", value: $report_file }]}' > code-insight.json
+        
+        # # Upload to Code Insights API
+        # - >
+        #   curl --request PUT "https://api.bitbucket.org/2.0/repositories/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}/commit/${BITBUCKET_COMMIT}/reports/trivy-scan-report"
+        #   --proxy 'http://localhost:29418'
+        #   --header "Content-Type: application/json"
+        #   --data-binary @code-insight.json
+
+  node-steps:
+    - step: &node-build-publish-codeartifact
+          name: "Run Node Build and Publish"
+          script: 
+            - /opt/nodejs/ci-scripts/node-build-publish.sh
+          artifacts:
+                  - dist/**
+    - step: &node-test
+          name: "Run Node Tests"
+          script:
+            - /opt/nodejs/ci-scripts/node-test.sh
+          artifacts:
+            - coverage/**
+    - step: &node-bump-version
+          name: "Bump version dynamically"
+          script: 
+            - /opt/nodejs/ci-scripts/node-bump-version.sh
+          artifacts:
+            - version.txt
+            - package.tmp.json
+    - step: &node-commit-bump-version
+        name: Commit Bump Version
+        script: 
+          - /opt/nodejs/ci-scripts/node-git-push-version.sh
+    - step: &node-docker-build-publish
+        name: Docker Build and Publish
+        services:
+          - docker
+        script:
+          - /opt/nodejs/ci-scripts/node-docker-build-publish.sh
+        artifacts:
+          - docker-image-version.txt
+  python-steps:
+    - step: &python-build-publish-codeartifact
+          name: "Run Node Build and Publish"
+          script: 
+            - /opt/python/ci-scripts/build-publish.sh
+          artifacts:
+                  - dist/**
+    - step: &python-test
+          name: "Run Node Tests"
+          script:
+            - /opt/python/ci-scripts/test.sh
+          artifacts:
+            - coverage/**
+    - step: &python-bump-version
+          name: "Bump version dynamically"
+          script: 
+            - /opt/python/ci-scripts/bump-version.sh
+          artifacts:
+            - version.txt
+            - pyproject.toml.tmp
+    - step: &python-commit-bump-version
+        name: Commit Bump Version
+        script: 
+          - /opt/python/ci-scripts/git-push-version.sh
+    - step: &python-docker-build-publish
+        name: Docker Build and Publish
+        services:
+          - docker
+        script:
+          - /opt/python/ci-scripts/docker-build-publish.sh
+        artifacts:
+          - docker-image-version.txt
+
+definitions:
+  caches:
+    npm: $HOME/.npm
+  shared-variables:
+    helm-chart-version: &helm-chart-version "export HELM_CHART_VERSION=0.1.1-32"
+  pipelines:
+    python-ecs: &python-ecs-pipeline
+      - stage:
+          name: "CI Stage"
+          steps:
+            - step: *scan-gitleaks
+            # - step: *python-test
+            - step: *python-bump-version
+            - step: *python-docker-build-publish
+            # - step: *aqua-trivy-scan-step
+            - step: *python-commit-bump-version
+      - stage:
+          name: "CD DEV"
+          deployment: Development
+          steps: 
+            - step: *deploy-to-ecs
+    python: &python-pipeline
+      - stage:
+          name: "CI Stage"
+          steps:
+            - step: *scan-gitleaks
+            # - step: *python-test
+            - step: *python-bump-version
+            - step: *python-docker-build-publish
+            # - step: *aqua-trivy-scan-step
+            - step: *python-commit-bump-version
+      - stage:
+          name: "CD DEV"
+          deployment: Development
+          steps: 
+            - step: 
+                name: "DEV"
+                runs-on:
+                  - 'self.hosted'
+                  - linux
+                  - 'aws.dev'
+                script:
+                  - export ENVIRONMENT=dev
+                  - *helm-chart-version
+                  - /opt/python/ci-scripts/helm-install.sh
+                services:
+                  - docker
+      - stage:
+          name: "CD UAT"
+          deployment: UAT
+          trigger: manual
+          steps: 
+            - step: 
+                name: "UAT"
+                runs-on:
+                  - 'self.hosted'
+                  - linux
+                  - 'aws.dev'
+                script:
+                  - export ENVIRONMENT=dev
+                  - *helm-chart-version
+                  - /opt/python/ci-scripts/helm-install.sh
+                services:
+                  - docker
+      - stage:
+          name: "CD PROD"
+          deployment: Production
+          trigger: manual
+          steps: 
+            - step: 
+                name: "Prod"
+                runs-on:
+                  - 'self.hosted'
+                  - linux
+                  - 'aws.dev'
+                script:
+                  - export ENVIRONMENT=dev
+                  - *helm-chart-version
+                  - /opt/python/ci-scripts/helm-install.sh
+                services:
+                  - docker
+    node: &node-pipeline
+      - stage:
+          name: "CI Stage"
+          steps:
+            - step: *scan-gitleaks
+            # - step: *node-test
+            - step: *node-bump-version
+            - step: *node-docker-build-publish
+            # - step: *aqua-trivy-scan-step
+            # - step: *node-build-publish-codeartifact
+            - step: *node-commit-bump-version
+      - stage:
+          name: "CD DEV"
+          deployment: Development
+          steps: 
+            - step: 
+                name: "DEV"
+                runs-on:
+                  - 'self.hosted'
+                  - linux
+                  - 'aws.dev'
+                script:
+                  - export ENVIRONMENT=dev
+                  - *helm-chart-version
+                  - /opt/nodejs/ci-scripts/helm-install.sh
+                services:
+                  - docker
+      - stage:
+          name: "CD UAT"
+          deployment: UAT
+          trigger: manual
+          steps: 
+            - step: 
+                name: "UAT"
+                runs-on:
+                  - 'self.hosted'
+                  - linux
+                  - 'aws.dev'
+                script:
+                  - export ENVIRONMENT=dev
+                  - *helm-chart-version
+                  - /opt/nodejs/ci-scripts/helm-install.sh
+                services:
+                  - docker
+      - stage:
+          name: "CD PROD"
+          deployment: Production
+          trigger: manual
+          steps: 
+            - step: 
+                name: "Prod"
+                runs-on:
+                  - 'self.hosted'
+                  - linux
+                  - 'aws.dev'
+                script:
+                  - export ENVIRONMENT=dev
+                  - export HELM_CHART_VERSION=0.1.1-12
+                  - /opt/nodejs/ci-scripts/helm-install.sh
+                services:
+                  - docker

@@ -1,0 +1,4 @@
+pipelines:
+  default:
+    # import: cicd-template:release/candidate:python
+    import: cicd-template:feature/init:python

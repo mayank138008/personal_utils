@@ -1,0 +1,30 @@
+project:
+  name: cruz
+
+  download_folder: ./raw_downloads
+  unzipped_folder: ./unzipped
+  ind_bands: ./ind_bands
+  merged_tif: ./merged_tif
+  clipped_tif: ./clipped_tif
+  output_dir: ./output_maps
+  model_dir: ./models
+
+  aoi_geojson: ./data/aoi.geojson
+  process_safe: true
+  start_date: 2020-01-01
+  download_limit: 10
+  safe_subfolder: GRANULE
+  map_output_folder: ./output_maps
+  # output_dir: ./output_maps
+  # merged_tif: ./merged_tif
+  # clipped_tif: ./clipped_tif
+
+date_range:
+  start: 2020-01-01
+  end: 2024-01-31
+
+aoi:
+  geojson_path: data/aoi.geojson
+
+models:
+  directory: ./models

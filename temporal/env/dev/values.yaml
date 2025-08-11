@@ -1,0 +1,34 @@
+service:
+  name: my-app-name
+  type: ClusterIP
+  port: 4799
+
+deployment:
+  name: my-app-name
+  appLabel: my-app-name
+  replicaCount: 2 # run 2 worker pod
+  extraPodSpecs:
+    enabled: false
+    spec: {}
+
+mainAppContainer:
+  name: my-app-name # <-- name of your application container
+  imagePullPolicy: IfNotPresent
+  customSpec: 
+    enabled: true 
+    spec:
+      env:
+        - name: TEMPORAL_SERVER
+          value: "temporal.temporal.svc.cluster.local:7233"
+      ports:
+        - containerPort: 6006 # <-- This is your application port
+
+
+
+authProxy:
+  enabled: false
+
+
+# this is a worker node, dont need ingress
+ingress:
+  enabled: false

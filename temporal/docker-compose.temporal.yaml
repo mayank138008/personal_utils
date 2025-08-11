@@ -1,0 +1,55 @@
+services:
+  temporal-db:
+    image: postgres:13
+    # container_name: temporal-db
+    ports:
+      - "5432:5432"          # host → container
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "temporal" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [ temporal-net ]
+
+  temporal:
+    image: temporalio/auto-setup:1.22            # server + schema loader
+    # container_name: temporal
+    ports:
+      - "7233:7233"
+    environment:
+      DB: postgresql
+      DB_PORT: 5432         # ✅ <--- Add this
+      POSTGRES_SEEDS: temporal-db                # 👈 **MUST have this**
+      # POSTGRES_PORT: 5432
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_DBNAME: temporal                  # internal DB
+      VISIBILITY_DBNAME: visibility
+    depends_on:
+      temporal-db:
+        condition: service_healthy
+    networks: [ temporal-net ]
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    # container_name: temporal-ui
+    ports:
+      - "8088:8080"
+    environment:
+      TEMPORAL_GRPC_ENDPOINT: temporal:7233
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8088
+    depends_on: [ temporal ]
+    networks: [ temporal-net ]
+
+volumes:
+  temporal_pg_data:
+
+networks:
+  temporal-net:

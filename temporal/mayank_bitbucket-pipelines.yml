@@ -1,0 +1,42 @@
+image: python:3.10
+
+pipelines:
+  default:
+    - step:
+        name: 🚀 Temporal Workflow Integration Test
+        services:
+          - docker
+        caches:
+          - pip
+        script:
+          # 1. Install Docker Compose
+          - apt-get update && apt-get install -y docker-compose
+
+          # 2. Go into your project folder
+          - cd temporal_5
+
+          # 3. Install Python dependencies
+          - pip install -r requirements.txt
+
+          # 4. Start Temporal Server stack
+          - docker-compose -f docker-compose.temporal.yaml up --build -d
+
+          # 5. Wait for Temporal server + DB to come online
+          - sleep 25
+
+          # 6. Build your Sentinel-2 processing Docker image
+          - docker build -t s2-product-pipeline:latest .
+
+          # 7. Run one test download (optional smoke test of container)
+          - docker run -v $(pwd):/app s2-product-pipeline:latest \
+              python run_one_product.py \
+              --step download \
+              --config config/config.yaml \
+              --product-id S2A_MSIL2A_20220129T132231_N0510_R038_T23LLD_20240508T030029.SAFE
+
+          # 8. Run the Temporal worker (no backgrounding in CI – just run it straight)
+          - python worker.py &
+
+          # 9. Trigger the workflow
+          - sleep 5
+          - python start_workflow.py
